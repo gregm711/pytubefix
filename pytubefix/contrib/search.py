@@ -247,13 +247,68 @@ class Search:
 
                 # Get shorts results
                 if "reelShelfRenderer" in video_details:
-                    for items in video_details["reelShelfRenderer"]["items"]:
-                        shorts.append(
-                            YouTube(
-                                f"https://www.youtube.com/watch?v="
-                                f"{items['reelItemRenderer']['videoId']}"
+                    logger.info("Processing reelShelfRenderer")
+                    for items in video_details["reelShelfRenderer"].get("items", []):
+                        logger.debug("ITEMS ARE ****")
+                        logger.debug(items)
+
+                        # Attempt to extract 'videoId' from 'reelItemRenderer'
+                        reel_item = items.get("reelItemRenderer")
+                        if reel_item and "videoId" in reel_item:
+                            shorts.append(
+                                YouTube(
+                                    f"https://www.youtube.com/watch?v={reel_item['videoId']}"
+                                )
                             )
-                        )
+                        else:
+                            # Alternative extraction from 'shortsLockupViewModel'
+                            shorts_lockup = items.get("shortsLockupViewModel")
+                            if shorts_lockup:
+                                video_id = shorts_lockup.get("entityId")
+                                if video_id and video_id.startswith(
+                                    "shorts-shelf-item-"
+                                ):
+                                    # Extract actual videoId from 'entityId' if possible
+                                    # Assuming 'entityId' follows the pattern 'shorts-shelf-item-VIDEOID'
+                                    video_id_extracted = video_id.replace(
+                                        "shorts-shelf-item-", ""
+                                    )
+                                    if video_id_extracted:
+                                        shorts.append(
+                                            YouTube(
+                                                f"https://www.youtube.com/watch?v={video_id_extracted}"
+                                            )
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Unable to extract videoId from entityId: %s",
+                                            video_id,
+                                        )
+                                else:
+                                    # Fallback: Try to extract 'videoId' from 'onTap' > 'innertubeCommand'
+                                    on_tap = shorts_lockup.get("onTap", {}).get(
+                                        "innertubeCommand", {}
+                                    )
+                                    reel_watch_endpoint = on_tap.get(
+                                        "reelWatchEndpoint", {}
+                                    )
+                                    video_id_alt = reel_watch_endpoint.get("videoId")
+                                    if video_id_alt:
+                                        shorts.append(
+                                            YouTube(
+                                                f"https://www.youtube.com/watch?v={video_id_alt}"
+                                            )
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "Missing 'videoId' in shortsLockupViewModel: %s",
+                                            shorts_lockup,
+                                        )
+                            else:
+                                logger.warning(
+                                    "Missing both 'reelItemRenderer' and 'shortsLockupViewModel' in items: %s",
+                                    items,
+                                )
 
                 # Get videos results
                 if "videoRenderer" in video_details:

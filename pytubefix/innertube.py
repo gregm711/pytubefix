@@ -622,7 +622,7 @@ class InnerTube:
         if continuation:
             data["continuation"] = continuation
         data.update(self.base_data)
-        return self._call_api(endpoint, query, data, proxies=self.proxies)
+        return self._call_api(endpoint, query, data)
 
     def verify_age(self, video_id):
         """Make a request to the age_verify endpoint.
