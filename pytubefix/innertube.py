@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import time
+from typing import Tuple
 from urllib import parse
 
 # Local imports
@@ -379,6 +380,24 @@ _cache_dir = pathlib.Path(__file__).parent.resolve() / "__cache__"
 _token_file = os.path.join(_cache_dir, "tokens.json")
 
 
+def _default_oauth_verifier(verification_url: str, user_code: str):
+    """Default `print(...)` and `input(...)` for oauth verification"""
+    print(f"Please open {verification_url} and input code {user_code}")
+    input("Press enter when you have completed this step.")
+
+
+def _default_po_token_verifier() -> Tuple[str, str]:
+    """
+    Requests the visitorData and po_token with an input and returns a tuple[visitorData: str, po_token: str]
+    """
+    print(
+        "You can use the tool: https://github.com/YunzheZJU/youtube-po-token-generator, to get the token"
+    )
+    visitor_data = str(input("Enter with your visitorData: "))
+    po_token = str(input("Enter with your po_token: "))
+    return visitor_data, po_token
+
+
 class InnerTube:
     """Object for interacting with the innertube API."""
 
@@ -388,6 +407,9 @@ class InnerTube:
         use_oauth=False,
         allow_cache=True,
         token_file=None,
+        oauth_verifier=None,
+        use_po_token=False,
+        po_token_verifier=None,
         proxies=None,
     ):
         """Initialize an InnerTube object.
@@ -397,9 +419,24 @@ class InnerTube:
             The default is ANDROID_TESTSUITE because there is no need to decrypt the
             signature cipher and throttling parameter.
         :param bool use_oauth:
-            Whether or not to authenticate to YouTube.
+            (Optional) Whether or not to authenticate to YouTube.
         :param bool allow_cache:
-            Allows caching of oauth tokens on the machine.
+            (Optional) Allows caching of oauth tokens on the machine.
+        :param str token_file:
+            (Optional) Path to the file where the OAuth and Po tokens will be stored.
+            Defaults to None, which means the tokens will be stored in the pytubefix/__cache__ directory.
+        :param Callable oauth_verifier:
+            (Optional) Verifier to be used for getting outh tokens.
+            Verification URL and User-Code will be passed to it respectively.
+            (if passed, else default verifier will be used)
+        :param bool use_po_token:
+            (Optional) Whether or not to use po_token to bypass YouTube bot detector.
+            It must be sent with the API along with the linked visitorData and
+            then passed as a `po_token` query parameter to affected clients.
+        :param Callable po_token_verifier:
+            (Optional) Verified used to obtain the visitorData and po_token.
+            The verifier will return the visitorData and po_token respectively.
+            (if passed, else default verifier will be used)
         """
         self.innertube_context = _default_clients[client]["innertube_context"]
         self.header = _default_clients[client]["header"]
@@ -407,22 +444,37 @@ class InnerTube:
         self.require_js_player = _default_clients[client]["require_js_player"]
         self.access_token = None
         self.refresh_token = None
+
+        self.access_po_token = None
+        self.access_visitorData = None
+
         self.use_oauth = use_oauth
         self.allow_cache = allow_cache
         self.proxies = proxies
+        self.oauth_verifier = oauth_verifier or _default_oauth_verifier
 
         # Stored as epoch time
         self.expires = None
+
+        self.use_po_token = use_po_token
+        self.po_token_verifier = po_token_verifier or _default_po_token_verifier
 
         # Try to load from file if specified
         self.token_file = token_file or _token_file
         if self.use_oauth and self.allow_cache and os.path.exists(self.token_file):
             with open(self.token_file) as f:
                 data = json.load(f)
-                self.access_token = data["access_token"]
-                self.refresh_token = data["refresh_token"]
-                self.expires = data["expires"]
-                self.refresh_bearer_token()
+                if data["access_token"]:
+                    self.access_token = data["access_token"]
+                    self.refresh_token = data["refresh_token"]
+                    self.expires = data["expires"]
+                    self.refresh_bearer_token()
+
+        if self.use_po_token and self.allow_cache and os.path.exists(self.token_file):
+            with open(self.token_file) as f:
+                data = json.load(f)
+                self.access_visitorData = data["visitorData"]
+                self.access_po_token = data["po_token"]
 
     def cache_tokens(self):
         """Cache tokens to file if allowed."""
@@ -433,6 +485,8 @@ class InnerTube:
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
             "expires": self.expires,
+            "visitorData": self.access_visitorData,
+            "po_token": self.access_po_token,
         }
         if not os.path.exists(_cache_dir):
             os.mkdir(_cache_dir)
@@ -486,11 +540,10 @@ class InnerTube:
             data=data,
             proxies=self.proxies,
         )
-        response_data = json.loads(response.text)
+        response_data = json.loads(response.read())
         verification_url = response_data["verification_url"]
         user_code = response_data["user_code"]
-        print(f"Please open {verification_url} and input code {user_code}")
-        input("Press enter when you have completed this step.")
+        self.oauth_verifier(verification_url, user_code)
 
         data = {
             "client_id": _client_id,
@@ -512,8 +565,29 @@ class InnerTube:
         self.expires = start_time + response_data["expires_in"]
         self.cache_tokens()
 
+    def insert_po_token(self) -> None:
+        """
+        Insert visitorData and po_token in the API request
+        """
+        self.innertube_context["context"]["client"].update(
+            {"visitorData": self.access_visitorData}
+        )
+
+        self.innertube_context.update(
+            {"serviceIntegrityDimensions": {"poToken": self.access_po_token}}
+        )
+
+    def fetch_po_token(self) -> None:
+        """
+        Requests visitorData and po_token, the default function is _default_po_token_verifier.
+        """
+        self.access_visitorData, self.access_po_token = self.po_token_verifier()
+        self.cache_tokens()
+
+        self.insert_po_token()
+
     @property
-    def base_url(self):
+    def base_url(self) -> str:
         """Return the base url endpoint for the innertube API."""
         return "https://www.youtube.com/youtubei/v1"
 
@@ -546,6 +620,13 @@ class InnerTube:
 
             headers["Authorization"] = f"Bearer {self.access_token}"
 
+        # Add the po_token if applicable
+        if self.use_po_token:
+            if self.access_po_token:
+                self.insert_po_token()
+            else:
+                self.fetch_po_token()
+
         headers.update(self.header)
 
         response = request._execute_request_requests(
@@ -555,12 +636,34 @@ class InnerTube:
         response_requests_loaded = json.loads(response_text_manual)
         return response_requests_loaded
 
-    def browse(self):
+    def browse(self, continuation=None, visitor_data=None):
         """Make a request to the browse endpoint.
+
+        :param str continuation:
+            Continuation token if there is pagination
+        :param str visitor_data:
+            Visitor Data, required to get YouTube Shorts
+        :rtype: dict
+        :returns:
+            Raw browse info results.
+        """
+        endpoint = f"{self.base_url}/browse"
+
+        query = self.base_params
+
+        if continuation:
+            self.base_data.update({"continuation": continuation})
+        if visitor_data:
+            self.base_data["context"]["client"].update({"visitorData": visitor_data})
+
+        return self._call_api(endpoint, query, self.base_data)
+
+    def reel(self):
+        """Make a request to the reel endpoint.
 
         TODO: Figure out how we can use this
         """
-        # endpoint = f'{self.base_url}/browse'  # noqa:E800
+        # endpoint = f'{self.base_url}/reel'  # noqa:E800
         ...
         # return self._call_api(endpoint, query, self.base_data)  # noqa:E800
 
