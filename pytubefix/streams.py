@@ -12,7 +12,7 @@ import os
 from math import ceil
 
 from datetime import datetime
-from typing import BinaryIO, Dict, Optional, Tuple
+from typing import BinaryIO, Dict, Optional, Tuple, Iterator, Callable
 from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from pathlib import Path
@@ -87,10 +87,10 @@ class Stream:
         if "fps" in stream:
             self.fps = stream["fps"]  # Video streams only
         self.resolution = itag_profile["resolution"]  # resolution (e.g.: "480p")
-        if "width" in stream:
-            self.width = stream["width"]
-        if "height" in stream:
-            self.width = stream["height"]
+
+        self._width = stream["width"] if "width" in stream else None
+        self._height = stream["height"] if "height" in stream else None
+
         self.is_3d = itag_profile["is_3d"]
         self.is_hdr = itag_profile["is_hdr"]
         self.is_live = itag_profile["is_live"]
@@ -163,6 +163,26 @@ class Stream:
         elif self.includes_audio_track:
             audio = self.codecs[0]
         return video, audio
+
+    @property
+    def width(self) -> int:
+        """Video width. Returns None if it does not have the value.
+
+        :rtype: int
+        :returns:
+            Returns an int of the video width
+        """
+        return self._width
+
+    @property
+    def height(self) -> int:
+        """Video height. Returns None if it does not have the value.
+
+        :rtype: int
+        :returns:
+            Returns an int of the video height
+        """
+        return self._height
 
     @property
     def filesize(self) -> int:
@@ -295,10 +315,11 @@ class Stream:
         filename_prefix: Optional[str] = None,
         skip_existing: bool = True,
         timeout: Optional[int] = None,
-        max_retries: Optional[int] = 0,
+        max_retries: int = 0,
         mp3: bool = False,
-        remove_problematic_character: str = None,
-    ) -> str:
+        remove_problematic_character: Optional[str] = None,
+        interrupt_checker: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
         """
         Download the file from the URL provided by `self.url`.
 
@@ -311,6 +332,7 @@ class Stream:
             max_retries (Optional[int]): Maximum number of retries for the download.
             mp3 (bool): Whether the file to be downloaded is an MP3 audio file.
             remove_problematic_character (str): Characters to be removed from the filename, exemple (problematic_character="?").
+            interrupt_checker (Callable): It will be checked while downloading. When it returns True, download will be stopped without any errors.
 
         Returns:
             str: File path of the downloaded file.
@@ -358,6 +380,11 @@ class Stream:
                     max_retries=max_retries,
                     proxies=self.proxies,
                 ):
+                    if interrupt_checker is not None and interrupt_checker() == True:
+                        logger.debug(
+                            "interrupt_checker returned True, causing to force stop the downloading"
+                        )
+                        return
                     # reduce the (bytes) remainder by the length of the chunk.
                     bytes_remaining -= len(chunk)
                     # send to the on_progress callback.
@@ -373,6 +400,11 @@ class Stream:
                     max_retries=max_retries,
                     proxies=self.proxies,
                 ):
+                    if interrupt_checker is not None and interrupt_checker() == True:
+                        logger.debug(
+                            "interrupt_checker returned True, causing to force stop the downloading"
+                        )
+                        return
                     # reduce the (bytes) remainder by the length of the chunk.
                     bytes_remaining -= len(chunk)
                     # send to the on_progress callback.
@@ -480,3 +512,66 @@ class Stream:
             parts.extend(['abr="{s.abr}"', 'acodec="{s.audio_codec}"'])
         parts.extend(['progressive="{s.is_progressive}"', 'type="{s.type}"'])
         return f"<Stream: {' '.join(parts).format(s=self)}>"
+
+    def on_progress_for_chunks(self, chunk: bytes, bytes_remaining: int):
+        """On progress callback function.
+
+        This function checks if an additional callback is defined in the monostate.
+        This is exposed to allow things like displaying a progress bar.
+
+        :param bytes chunk:
+        Segment of media file binary data, not yet written to disk.
+        :py:class:`io.BufferedWriter`
+        :param int bytes_remaining:
+        The delta between the total file size in bytes and amount already
+        downloaded.
+
+        :rtype: None
+        """
+
+        logger.debug("download remaining: %s", bytes_remaining)
+        if self._monostate.on_progress:
+            self._monostate.on_progress(self, chunk, bytes_remaining)
+
+    def iter_chunks(self, chunk_size: Optional[int] = None) -> Iterator[bytes]:
+        """Get the chunks directly
+
+        Example:
+        # Write the chunk by yourself
+        with open("somefile.mp4") as out_file:
+            out_file.writelines(stream.iter_chunks(512))
+
+            # Another way
+            # for chunk in stream.iter_chunks(512):
+            #   out_file.write(chunk)
+
+        # Or give it external api
+        external_api.write_media(stream.iter_chunks(512))
+
+        :param int chunk size:
+        The size in the bytes
+        :rtype: Iterator[bytes]
+        """
+
+        bytes_remaining = self.filesize
+
+        if chunk_size:
+            request.default_range_size = chunk_size
+
+        logger.info(
+            "downloading (%s total bytes) file to buffer",
+            self.filesize,
+        )
+        try:
+            stream = request.stream(self.url)
+        except HTTPError as e:
+            if e.code != 404:
+                raise
+            stream = request.seq_stream(self.url)
+
+        for chunk in stream:
+            bytes_remaining -= len(chunk)
+            self.on_progress_for_chunks(chunk, bytes_remaining)
+            yield chunk
+
+        self.on_complete(None)

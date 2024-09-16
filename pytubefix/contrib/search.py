@@ -2,25 +2,79 @@
 
 # Native python imports
 import logging
-from typing import List
+from typing import List, Optional, Dict, Callable, Tuple
 
 # Local imports
 from pytubefix import YouTube, Channel, Playlist
-from pytubefix.helpers import deprecated
+from pytubefix.helpers import deprecated, install_proxy
 from pytubefix.innertube import InnerTube
 
 logger = logging.getLogger(__name__)
 
 
 class Search:
-    def __init__(self, query, proxies=None):
+    def __init__(
+        self,
+        query: str,
+        client: str = "WEB",
+        proxies: Optional[Dict[str, str]] = None,
+        use_oauth: bool = False,
+        allow_oauth_cache: bool = True,
+        token_file: Optional[str] = None,
+        oauth_verifier: Optional[Callable[[str, str], None]] = None,
+        use_po_token: Optional[bool] = False,
+        po_token_verifier: Optional[Callable[[None], Tuple[str, str]]] = None,
+    ):
         """Initialize Search object.
 
         :param str query:
             Search query provided by the user.
+        :param dict proxies:
+            (Optional) A dict mapping protocol to proxy address which will be used by pytube.
+        :param bool use_oauth:
+            (Optional) Prompt the user to authenticate to YouTube.
+            If allow_oauth_cache is set to True, the user should only be prompted once.
+        :param bool allow_oauth_cache:
+            (Optional) Cache OAuth tokens locally on the machine. Defaults to True.
+            These tokens are only generated if use_oauth is set to True as well.
+        :param str token_file:
+            (Optional) Path to the file where the OAuth tokens will be stored.
+            Defaults to None, which means the tokens will be stored in the pytubefix/__cache__ directory.
+        :param Callable oauth_verifier:
+            (optional) Verifier to be used for getting OAuth tokens.
+            Verification URL and User-Code will be passed to it respectively.
+            (if passed, else default verifier will be used)
+        :param bool use_po_token:
+            (Optional) Prompt the user to use the proof of origin token on YouTube.
+            It must be sent with the API along with the linked visitorData and
+            then passed as a `po_token` query parameter to affected clients.
+            If allow_oauth_cache is set to True, the user should only be prompted once.
+        :param Callable po_token_verifier:
+            (Optional) Verified used to obtain the visitorData and po_token.
+            The verifier will return the visitorData and po_token respectively.
+            (if passed, else default verifier will be used)
         """
         self.query = query
-        self._innertube_client = InnerTube(client="WEB", proxies=proxies)
+        self.client = client
+        self.use_oauth = use_oauth
+        self.allow_oauth_cache = allow_oauth_cache
+        self.token_file = token_file
+        self.oauth_verifier = oauth_verifier
+
+        self.use_po_token = use_po_token
+        self.po_token_verifier = po_token_verifier
+        self.proxies = proxies
+
+        self._innertube_client = InnerTube(
+            client=self.client,
+            use_oauth=self.use_oauth,
+            allow_cache=self.allow_oauth_cache,
+            token_file=self.token_file,
+            oauth_verifier=self.oauth_verifier,
+            use_po_token=self.use_po_token,
+            po_token_verifier=self.po_token_verifier,
+            proxies=self.proxies,
+        )
 
         # The first search, without a continuation, is structured differently
         #  and contains completion suggestions, so we must store this separately
@@ -232,7 +286,14 @@ class Search:
                     playlist.append(
                         Playlist(
                             f"https://www.youtube.com/playlist?list="
-                            f"{video_details['playlistRenderer']['playlistId']}"
+                            f"{video_details['playlistRenderer']['playlistId']}",
+                            use_oauth=self.use_oauth,
+                            allow_oauth_cache=self.allow_oauth_cache,
+                            token_file=self.token_file,
+                            oauth_verifier=self.oauth_verifier,
+                            use_po_token=self.use_po_token,
+                            po_token_verifier=self.po_token_verifier,
+                            proxies=self.proxies,
                         )
                     )
 
@@ -241,17 +302,37 @@ class Search:
                     channel.append(
                         Channel(
                             f"https://www.youtube.com/channel/"
-                            f"{video_details['channelRenderer']['channelId']}"
+                            f"{video_details['channelRenderer']['channelId']}",
+                            use_oauth=self.use_oauth,
+                            allow_oauth_cache=self.allow_oauth_cache,
+                            token_file=self.token_file,
+                            oauth_verifier=self.oauth_verifier,
+                            use_po_token=self.use_po_token,
+                            po_token_verifier=self.po_token_verifier,
+                            proxies=self.proxies,
                         )
                     )
 
                 # Get shorts results
                 if "reelShelfRenderer" in video_details:
                     for items in video_details["reelShelfRenderer"]["items"]:
+                        if "reelItemRenderer" in items:
+                            video_id = items["reelItemRenderer"]["videoId"]
+                        else:
+                            video_id = items["shortsLockupViewModel"]["onTap"][
+                                "innertubeCommand"
+                            ]["reelWatchEndpoint"]["videoId"]
+
                         shorts.append(
                             YouTube(
-                                f"https://www.youtube.com/watch?v="
-                                f"{items['reelItemRenderer']['videoId']}"
+                                f"https://www.youtube.com/watch?v={video_id}",
+                                use_oauth=self.use_oauth,
+                                allow_oauth_cache=self.allow_oauth_cache,
+                                token_file=self.token_file,
+                                oauth_verifier=self.oauth_verifier,
+                                use_po_token=self.use_po_token,
+                                po_token_verifier=self.po_token_verifier,
+                                proxies=self.proxies,
                             )
                         )
 
@@ -260,7 +341,14 @@ class Search:
                     videos.append(
                         YouTube(
                             f"https://www.youtube.com/watch?v="
-                            f"{video_details['videoRenderer']['videoId']}"
+                            f"{video_details['videoRenderer']['videoId']}",
+                            use_oauth=self.use_oauth,
+                            allow_oauth_cache=self.allow_oauth_cache,
+                            token_file=self.token_file,
+                            oauth_verifier=self.oauth_verifier,
+                            use_po_token=self.use_po_token,
+                            po_token_verifier=self.po_token_verifier,
+                            proxies=self.proxies,
                         )
                     )
 
